@@ -4,16 +4,18 @@ from rest_framework.decorators import action
 from rest_framework.permissions import AllowAny,IsAuthenticated,IsAdminUser
 from rest_framework.response import Response
 from .models import User
-from .serializer import UserRegistrationSerializer,UserLoginSerializer,ChangePasswordSerializer
+from .serializer import UserRegistrationSerializer,UserLoginSerializer,ChangePasswordSerializer,UserProfileSerializer
 from .admin_serializer import DevoteeListSerializer, DevoteeDetailSerializer, AdminDailyActivitySerializer
 from devotee.serializers import MonthlyActivitySerializer
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth import logout, authenticate
-from django.db.models import Q, Count, Avg, Sum
+from django.db.models import Q, Count, Avg, Sum, Max
 from django.utils import timezone
 from datetime import date, timedelta, datetime
 from devotee.models import DailyActivity, MonthlyActivity, Week
 from collections import defaultdict
+import secrets
+import hashlib
 def get_tokens_for_user(user):
     refresh = RefreshToken.for_user(user)
     return {
@@ -63,15 +65,25 @@ class UserAuthenticationViewSet(viewsets.ViewSet):
         user = serializer.validated_data['user']
 
         refresh = RefreshToken.for_user(user)
+        
+        # Build full URL for profile image
+        profile_image_url = None
+        if user.profile_image:
+            profile_image_url = request.build_absolute_uri(user.profile_image.url)
+        
         return Response({
             "message": "Login successfully",
             "refresh": str(refresh),
             "access": str(refresh.access_token),
             "user": {
+                "id": user.id,
                 "username": user.username,
                 "first_name": user.first_name,
                 "last_name": user.last_name,
-                "email": user.email
+                "email": user.email,
+                "profile_image": profile_image_url,
+                "date_of_birth": user.date_of_birth.strftime('%Y-%m-%d') if user.date_of_birth else None,
+                "initiation_date": user.initiation_date.strftime('%Y-%m-%d') if user.initiation_date else None,
             }
         }, status=status.HTTP_200_OK)
 
@@ -98,6 +110,189 @@ class UserAuthenticationViewSet(viewsets.ViewSet):
             return Response({"message": "User logged out successfully."}, status=status.HTTP_200_OK)
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+    @action(detail=False, methods=['GET'], permission_classes=[IsAuthenticated], url_path='profile')
+    def get_profile(self, request):
+        """Get current user profile"""
+        serializer = UserProfileSerializer(request.user, context={'request': request})
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=['PUT', 'PATCH'], permission_classes=[IsAuthenticated], url_path='update-profile')
+    def update_profile(self, request):
+        """Update user profile"""
+        serializer = UserProfileSerializer(
+            request.user, 
+            data=request.data, 
+            partial=True,
+            context={'request': request}
+        )
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        
+        # Refresh user from database to get updated data
+        request.user.refresh_from_db()
+        
+        # Build full URL for profile image
+        profile_image_url = None
+        if request.user.profile_image:
+            profile_image_url = request.build_absolute_uri(request.user.profile_image.url)
+        
+        # Update user data in response
+        user_data = {
+            'id': request.user.id,
+            'username': request.user.username,
+            'first_name': request.user.first_name,
+            'last_name': request.user.last_name,
+            'email': request.user.email,
+            'profile_image': profile_image_url,
+            'date_of_birth': request.user.date_of_birth.strftime('%Y-%m-%d') if request.user.date_of_birth else None,
+            'initiation_date': request.user.initiation_date.strftime('%Y-%m-%d') if request.user.initiation_date else None,
+        }
+        
+        return Response({
+            "message": "Profile updated successfully.",
+            "user": user_data
+        }, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=['DELETE'], permission_classes=[IsAuthenticated], url_path='delete-profile')
+    def delete_profile(self, request):
+        """Delete complete user profile and all associated data"""
+        user = request.user
+        
+        # Delete all sadana data first
+        DailyActivity.objects.filter(user=user).delete()
+        MonthlyActivity.objects.filter(user=user).delete()
+        Week.objects.filter(created_by=user).delete()
+        
+        # Delete user account
+        user.delete()
+        
+        return Response({
+            "message": "Profile and all associated data deleted successfully."
+        }, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=['DELETE'], permission_classes=[IsAuthenticated], url_path='delete-sadana-data')
+    def delete_sadana_data(self, request):
+        """Delete only sadana information (activities), not account"""
+        user = request.user
+        
+        # Delete all sadana data
+        DailyActivity.objects.filter(user=user).delete()
+        MonthlyActivity.objects.filter(user=user).delete()
+        Week.objects.filter(created_by=user).delete()
+        
+        return Response({
+            "message": "All sadana information deleted successfully. Your account remains active."
+        }, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=['GET'], permission_classes=[IsAuthenticated], url_path='spiritual-growth')
+    def get_spiritual_growth(self, request):
+        """Get comprehensive spiritual growth statistics for the user"""
+        user = request.user
+        
+        # 1. Total Round of chanting till now
+        total_chanting_rounds = DailyActivity.objects.filter(user=user).aggregate(
+            total=Sum('daily_chanting')
+        )['total'] or 0
+        
+        # 2. Highest chanting round in a day
+        highest_chanting = DailyActivity.objects.filter(user=user).aggregate(
+            max_rounds=Max('daily_chanting')
+        )['max_rounds'] or 0
+        
+        # 3. Total count of sport session attendance
+        sport_attended_count = DailyActivity.objects.filter(
+            user=user,
+            sport_session_attendance='Attended'
+        ).count()
+        
+        # 4. Total Number of Books read and their names
+        completed_books = MonthlyActivity.objects.filter(
+            user=user,
+            monthly_book_completed='Completed'
+        ).exclude(book_name='').values_list('book_name', flat=True).distinct()
+        
+        partially_completed_books = MonthlyActivity.objects.filter(
+            user=user,
+            monthly_book_completed='Partially Completed'
+        ).exclude(book_name='').values_list('book_name', flat=True).distinct()
+        
+        total_books_completed = completed_books.count()
+        total_books_partial = partially_completed_books.count()
+        
+        # 5. Morning Program attendance count
+        morning_program_count = MonthlyActivity.objects.filter(
+            user=user,
+            monthly_morning_program='Attended'
+        ).count()
+        
+        # 6. Weekly morning chanting session attendance (Thursday)
+        thursday_chanting_count = DailyActivity.objects.filter(
+            user=user,
+            thursday_morning_chanting_session_attendance='Attended'
+        ).count()
+        
+        # 7. Sunday offline program attendance
+        sunday_offline_count = DailyActivity.objects.filter(
+            user=user,
+            sunday_offline_program_attendance='Attended'
+        ).count()
+        
+        # 8. Sunday temple chanting session attendance
+        sunday_temple_chanting_count = DailyActivity.objects.filter(
+            user=user,
+            sunday_temple_chanting_session_attendance='Attended'
+        ).count()
+        
+        # 9. Weekly seva count
+        weekly_seva_count = DailyActivity.objects.filter(
+            user=user,
+            weekly_seva='Yes'
+        ).count()
+        
+        return Response({
+            "total_chanting_rounds": total_chanting_rounds,
+            "highest_chanting_rounds": highest_chanting,
+            "sport_session_attendance_count": sport_attended_count,
+            "total_books_completed": total_books_completed,
+            "total_books_partially_completed": total_books_partial,
+            "completed_books": list(completed_books),
+            "partially_completed_books": list(partially_completed_books),
+            "morning_program_count": morning_program_count,
+            "thursday_chanting_count": thursday_chanting_count,
+            "sunday_offline_program_count": sunday_offline_count,
+            "sunday_temple_chanting_count": sunday_temple_chanting_count,
+            "weekly_seva_count": weekly_seva_count,
+        }, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=['GET', 'POST'], permission_classes=[IsAuthenticated], url_path='generate-qr-token')
+    def generate_qr_token(self, request):
+        """Generate or regenerate QR token for quick entry"""
+        user = request.user
+        
+        # Generate a secure random token
+        token = secrets.token_urlsafe(32)
+        
+        # Ensure uniqueness
+        while User.objects.filter(qr_token=token).exists():
+            token = secrets.token_urlsafe(32)
+        
+        # Save token to user
+        user.qr_token = token
+        user.qr_token_created_at = timezone.now()
+        user.save()
+        
+        # Build the quick entry URL - point to frontend, not backend
+        # Get frontend URL from settings or use default (Vite default is 5173)
+        from django.conf import settings
+        frontend_url = getattr(settings, 'FRONTEND_URL', 'http://localhost:5173')
+        qr_url = f"{frontend_url}/quick-entry/{token}"
+        
+        return Response({
+            "qr_token": token,
+            "qr_url": qr_url,
+            "message": "QR token generated successfully. Use this URL in your QR code."
+        }, status=status.HTTP_200_OK)
 
 
 class AdminViewSet(viewsets.ViewSet):

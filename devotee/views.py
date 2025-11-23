@@ -1,12 +1,13 @@
 from rest_framework import viewsets, status
-from rest_framework.decorators import action
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.decorators import action, api_view, permission_classes
+from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
 from datetime import date, timedelta
-from django.utils.timezone import now
+from django.utils import timezone
 from django.db.models import Sum
 from .models import DailyActivity, Week, MonthlyActivity
 from .serializers import DailyActivitySerializer, WeekSerializer, MonthlyActivitySerializer
+from authentication.models import User
 
 
 
@@ -17,7 +18,7 @@ DAY_SPECIFIC_FIELDS = {
     "Tuesday": [],
     "Wednesday": [],
     "Thursday": ["thursday_morning_chanting_session_attendance"],
-    "Friday": [""],
+    "Friday": ["friday_morning_chanting_session_attendance"],
     "Saturday": [],
     "Sunday": ["sunday_offline_program_attendance", "sunday_temple_chanting_session_attendance"]
 }
@@ -450,6 +451,275 @@ class MonthlyActivityViewSet(viewsets.ModelViewSet):
             "total_count": queryset.count(),
             "activities": serializer.data
         }, status=status.HTTP_200_OK)
+
+
+# QR Code Quick Entry Views (Public - No Authentication Required)
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def validate_qr_token(request, token):
+    """
+    Validate QR token and return today's editable fields and existing data
+    No authentication required - uses token instead
+    """
+    if not token:
+        return Response({"error": "Token is required."}, status=status.HTTP_400_BAD_REQUEST)
+    
+    try:
+        user = User.objects.get(qr_token=token, is_active=True)
+    except User.DoesNotExist:
+        return Response({
+            "error": "Invalid or expired QR token. Please generate a new QR code from your profile."
+        }, status=status.HTTP_404_NOT_FOUND)
+    
+    # Check if token is too old (optional - 1 year expiration)
+    if user.qr_token_created_at:
+        days_old = (timezone.now() - user.qr_token_created_at).days
+        if days_old > 365:
+            return Response({
+                "error": "QR token has expired. Please generate a new QR code from your profile."
+            }, status=status.HTTP_400_BAD_REQUEST)
+    
+    # Get today's date
+    today = date.today()
+    weekday_name = today.strftime("%A")
+    
+    # Determine editable fields for today
+    allowed_fields = BASE_FIELDS + DAY_SPECIFIC_FIELDS.get(weekday_name, [])
+    
+    # Add Sunday weekly fields if it's Sunday
+    if weekday_name == "Sunday":
+        allowed_fields.extend(["weekly_discussion_session", "weekly_sloka_audio_posted", "weekly_seva"])
+    
+    # Get existing activity for today if any
+    existing_activity = None
+    try:
+        activity = DailyActivity.objects.get(user=user, date=today)
+        serializer = DailyActivitySerializer(activity)
+        existing_activity = serializer.data
+    except DailyActivity.DoesNotExist:
+        pass
+    
+    # Build field definitions for frontend
+    field_definitions = {}
+    
+    # Base fields
+    if "daily_hearing" in allowed_fields:
+        field_definitions["daily_hearing"] = {
+            "label": "Daily Hearing",
+            "type": "select",
+            "options": [
+                {"value": "Completed", "label": "Completed"},
+                {"value": "Not Completed", "label": "Not Completed"}
+            ],
+            "value": existing_activity.get("daily_hearing", "Not Completed") if existing_activity else "Not Completed"
+        }
+    
+    if "daily_reading" in allowed_fields:
+        field_definitions["daily_reading"] = {
+            "label": "Daily Reading",
+            "type": "select",
+            "options": [
+                {"value": "Completed", "label": "Completed"},
+                {"value": "Not Completed", "label": "Not Completed"}
+            ],
+            "value": existing_activity.get("daily_reading", "Not Completed") if existing_activity else "Not Completed"
+        }
+    
+    if "daily_chanting" in allowed_fields:
+        field_definitions["daily_chanting"] = {
+            "label": "Daily Chanting (Rounds)",
+            "type": "number",
+            "min": 0,
+            "value": existing_activity.get("daily_chanting", 0) if existing_activity else 0
+        }
+    
+    if "sport_session_attendance" in allowed_fields:
+        field_definitions["sport_session_attendance"] = {
+            "label": "Sport Session Attendance",
+            "type": "select",
+            "options": [
+                {"value": "Attended", "label": "Attended"},
+                {"value": "Not Attended", "label": "Not Attended"},
+                {"value": "No Session Today", "label": "No Session Today"}
+            ],
+            "value": existing_activity.get("sport_session_attendance", "Not Attended") if existing_activity else "Not Attended"
+        }
+    
+    # Thursday specific
+    if "thursday_morning_chanting_session_attendance" in allowed_fields:
+        field_definitions["thursday_morning_chanting_session_attendance"] = {
+            "label": "Thursday Morning Chanting Session",
+            "type": "select",
+            "options": [
+                {"value": "Attended", "label": "Attended"},
+                {"value": "Not Attended", "label": "Not Attended"}
+            ],
+            "value": existing_activity.get("thursday_morning_chanting_session_attendance", "Not Attended") if existing_activity else "Not Attended"
+        }
+    
+    # Friday specific
+    if "friday_morning_chanting_session_attendance" in allowed_fields:
+        field_definitions["friday_morning_chanting_session_attendance"] = {
+            "label": "Friday Morning Chanting Session",
+            "type": "select",
+            "options": [
+                {"value": "Attended", "label": "Attended"},
+                {"value": "Not Attended", "label": "Not Attended"}
+            ],
+            "value": existing_activity.get("friday_morning_chanting_session_attendance", "Not Attended") if existing_activity else "Not Attended"
+        }
+    
+    # Sunday specific
+    if "sunday_offline_program_attendance" in allowed_fields:
+        field_definitions["sunday_offline_program_attendance"] = {
+            "label": "Sunday Offline Program Attendance",
+            "type": "select",
+            "options": [
+                {"value": "Attended", "label": "Attended"},
+                {"value": "Not Attended", "label": "Not Attended"}
+            ],
+            "value": existing_activity.get("sunday_offline_program_attendance", "Not Attended") if existing_activity else "Not Attended"
+        }
+    
+    if "sunday_temple_chanting_session_attendance" in allowed_fields:
+        field_definitions["sunday_temple_chanting_session_attendance"] = {
+            "label": "Sunday Temple Chanting Session",
+            "type": "select",
+            "options": [
+                {"value": "Attended", "label": "Attended"},
+                {"value": "Not Attended", "label": "Not Attended"}
+            ],
+            "value": existing_activity.get("sunday_temple_chanting_session_attendance", "Not Attended") if existing_activity else "Not Attended"
+        }
+    
+    if "weekly_discussion_session" in allowed_fields:
+        field_definitions["weekly_discussion_session"] = {
+            "label": "Weekly Discussion Session",
+            "type": "select",
+            "options": [
+                {"value": "Online", "label": "Online"},
+                {"value": "Offline", "label": "Offline"},
+                {"value": "Not Attended", "label": "Not Attended"}
+            ],
+            "value": existing_activity.get("weekly_discussion_session", "Not Attended") if existing_activity else "Not Attended"
+        }
+    
+    if "weekly_sloka_audio_posted" in allowed_fields:
+        field_definitions["weekly_sloka_audio_posted"] = {
+            "label": "Weekly Sloka Audio Posted",
+            "type": "select",
+            "options": [
+                {"value": "Yes", "label": "Yes"},
+                {"value": "No", "label": "No"}
+            ],
+            "value": existing_activity.get("weekly_sloka_audio_posted", "No") if existing_activity else "No"
+        }
+    
+    if "weekly_seva" in allowed_fields:
+        field_definitions["weekly_seva"] = {
+            "label": "Weekly Seva",
+            "type": "select",
+            "options": [
+                {"value": "Yes", "label": "Yes"},
+                {"value": "No", "label": "No"}
+            ],
+            "value": existing_activity.get("weekly_seva", "No") if existing_activity else "No"
+        }
+    
+    return Response({
+        "valid": True,
+        "user_name": f"{user.first_name} {user.last_name}",
+        "today": today.isoformat(),
+        "day_name": weekday_name,
+        "editable_fields": allowed_fields,
+        "field_definitions": field_definitions,
+        "has_existing_data": existing_activity is not None
+    }, status=status.HTTP_200_OK)
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def submit_quick_entry(request, token):
+    """
+    Submit today's activities via QR token (no authentication required)
+    """
+    if not token:
+        return Response({"error": "Token is required."}, status=status.HTTP_400_BAD_REQUEST)
+    
+    try:
+        user = User.objects.get(qr_token=token, is_active=True)
+    except User.DoesNotExist:
+        return Response({
+            "error": "Invalid or expired QR token. Please generate a new QR code from your profile."
+        }, status=status.HTTP_404_NOT_FOUND)
+    
+    # Check token expiration
+    if user.qr_token_created_at:
+        days_old = (timezone.now() - user.qr_token_created_at).days
+        if days_old > 365:
+            return Response({
+                "error": "QR token has expired. Please generate a new QR code from your profile."
+            }, status=status.HTTP_400_BAD_REQUEST)
+    
+    # Get today's date
+    today = date.today()
+    weekday_name = today.strftime("%A")
+    
+    # Determine editable fields for today
+    allowed_fields = BASE_FIELDS + DAY_SPECIFIC_FIELDS.get(weekday_name, [])
+    
+    # Add Sunday weekly fields if it's Sunday
+    if weekday_name == "Sunday":
+        allowed_fields.extend(["weekly_discussion_session", "weekly_sloka_audio_posted", "weekly_seva"])
+    
+    # Validate that only allowed fields are being submitted
+    submitted_fields = set(request.data.keys())
+    invalid_fields = submitted_fields - set(allowed_fields + ['date'])  # date is allowed for validation
+    
+    if invalid_fields:
+        return Response({
+            "error": f"Invalid fields submitted: {', '.join(invalid_fields)}. Only today's fields are allowed."
+        }, status=status.HTTP_400_BAD_REQUEST)
+    
+    # Compute week start/end
+    start_of_week = today - timedelta(days=today.weekday())
+    end_of_week = start_of_week + timedelta(days=6)
+    
+    # Get or create week object
+    week_obj, _ = Week.objects.get_or_create(
+        start_date=start_of_week,
+        end_date=end_of_week,
+        month=start_of_week.month,
+        year=start_of_week.year,
+        created_by=user,
+        defaults={"name": f"Week of {start_of_week}"}
+    )
+    
+    # Filter only allowed fields from request data
+    update_data = {k: v for k, v in request.data.items() if k in allowed_fields}
+    
+    # Validate data types
+    if 'daily_chanting' in update_data:
+        try:
+            update_data['daily_chanting'] = int(update_data['daily_chanting'])
+            if update_data['daily_chanting'] < 0:
+                return Response({"error": "Daily chanting rounds cannot be negative."}, status=status.HTTP_400_BAD_REQUEST)
+        except (ValueError, TypeError):
+            return Response({"error": "Daily chanting must be a valid number."}, status=status.HTTP_400_BAD_REQUEST)
+    
+    # Update or create activity
+    activity, created = DailyActivity.objects.update_or_create(
+        user=user,
+        date=today,
+        defaults={**update_data, "week": week_obj}
+    )
+    
+    serializer = DailyActivitySerializer(activity)
+    return Response({
+        "message": f"Today's ({weekday_name}) activities {'saved' if created else 'updated'} successfully!",
+        "data": serializer.data,
+        "day_name": weekday_name
+    }, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
 
 
 

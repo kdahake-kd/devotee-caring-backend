@@ -126,6 +126,14 @@ USE_TZ = True
 
 STATIC_URL = 'static/'
 
+# Media files (for user uploads like profile images)
+MEDIA_URL = '/media/'
+MEDIA_ROOT = BASE_DIR / 'media'
+
+# Frontend URL for QR code generation
+# Vite default port is 5173, but check your frontend dev server port
+FRONTEND_URL = 'http://localhost:5173'  # Change this to match your frontend URL/port
+
 # Default primary key field type
 # https://docs.djangoproject.com/en/4.1/ref/settings/#default-auto-field
 

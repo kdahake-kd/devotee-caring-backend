@@ -60,6 +60,35 @@ class ChangePasswordSerializer(serializers.Serializer):
         return attrs
 
 
+class UserProfileSerializer(serializers.ModelSerializer):
+    """Serializer for user profile update"""
+    profile_image_url = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = User
+        fields = ['first_name', 'last_name', 'email', 'profile_image', 'profile_image_url', 'date_of_birth', 'initiation_date']
+        extra_kwargs = {
+            'email': {'required': False},
+            'profile_image': {'required': False, 'write_only': True},
+            'date_of_birth': {'required': False},
+            'initiation_date': {'required': False},
+        }
+    
+    def get_profile_image_url(self, obj):
+        if obj.profile_image:
+            request = self.context.get('request')
+            if request:
+                return request.build_absolute_uri(obj.profile_image.url)
+            return obj.profile_image.url
+        return None
+    
+    def validate_email(self, value):
+        user = self.context['request'].user
+        if value and User.objects.filter(email=value).exclude(id=user.id).exists():
+            raise serializers.ValidationError("User with this Email is already Registered")
+        return value
+
+
 
 
 

@@ -23,6 +23,15 @@ class User(AbstractUser,PermissionsMixin):
     first_name = models.CharField(max_length=50)
     last_name = models.CharField(max_length=50)
     is_user_verified= models.BooleanField(default=False)
+    
+    # Profile fields
+    profile_image = models.ImageField(upload_to='profile_images/', blank=True, null=True)
+    date_of_birth = models.DateField(blank=True, null=True)
+    initiation_date = models.DateField(blank=True, null=True)
+    
+    # QR Code fields
+    qr_token = models.CharField(max_length=64, unique=True, blank=True, null=True)
+    qr_token_created_at = models.DateTimeField(blank=True, null=True)
 
     is_active = models.BooleanField(default=False)
     is_staff = models.BooleanField(default=False)
