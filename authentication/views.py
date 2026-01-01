@@ -294,7 +294,7 @@ class UserAuthenticationViewSet(viewsets.ViewSet):
             "message": "QR token generated successfully. Use this URL in your QR code."
         }, status=status.HTTP_200_OK)
 
-
+    
 class AdminViewSet(viewsets.ViewSet):
     """
     Admin endpoints:

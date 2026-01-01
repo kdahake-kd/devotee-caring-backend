@@ -263,10 +263,6 @@ class DailyActivityViewSet(viewsets.ModelViewSet):
             "total_chanting_rounds": total_chanting_rounds
         }, status=status.HTTP_200_OK)
     
-    
-
-
-
 class MonthlyActivityViewSet(viewsets.ModelViewSet):
     queryset = MonthlyActivity.objects.all()
     serializer_class = MonthlyActivitySerializer
@@ -642,6 +638,7 @@ def validate_qr_token(request, token):
 def submit_quick_entry(request, token):
     """
     Submit today's activities via QR token (no authentication required)
+    
     """
     if not token:
         return Response({"error": "Token is required."}, status=status.HTTP_400_BAD_REQUEST)
